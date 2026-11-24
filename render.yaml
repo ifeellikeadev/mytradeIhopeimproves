@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: trading-signal-lab
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      - key: TWELVE_DATA_API_KEY
+        sync: false
+      - key: MARKET_DATA_PROVIDER
+        value: twelvedata
+      - key: ENABLE_YAHOO_FALLBACK
+        value: true
+      - key: DATABASE_PATH
+        value: /tmp/trading_signals.db
