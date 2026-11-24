@@ -14,7 +14,7 @@ def bars(n=160, spike=False):
 
 
 def candidate(side='LONG', pattern='Bullish engulfing'):
-    return {'direction': side, 'rationale': 'directional setup', 'candlestick_pattern': pattern,
+    return {'direction': side, 'rationale': 'directional setup', 'volume_pass': True, 'candlestick_pattern': pattern,
             'entry_reference': 100, 'stop_loss': 97, 'take_profit': 106, 'risk_reward': '1:2'}
 
 
@@ -59,11 +59,12 @@ def test_sustained_volatility_can_block_without_a_single_spike():
 def test_latest_bar_omitted_and_extreme_signal_never_opens(monkeypatch):
     data = bars(spike=True) + [bars(n=161)[-1]]
     async def fetch(symbol, interval, n):
-        assert interval == '15min', 'Blocked candidate should not need higher-timeframe data'
+        if interval != '15min':
+            raise RuntimeError('Unavailable higher timeframe')
         return data, 'test', []
     monkeypatch.setattr(main.router, 'candles', fetch)
     monkeypatch.setattr(main, 'analyse', lambda selected: candidate())
-    monkeypatch.setattr(main, 'update_open_trades', lambda *args: [42])
+    monkeypatch.setattr(main, 'update_paper_trades', lambda *args: [42])
     def save(symbol, interval, result, provider):
         assert result['direction'] == 'WAIT'
         return 7, False

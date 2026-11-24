@@ -16,7 +16,7 @@ def test_breakdown_uses_the_same_rules_as_score():
     assert report['score_checks']['LONG']['Trend'] is True
     assert report['score_checks']['SHORT']['Trend'] is False
     for direction in ('LONG', 'SHORT'):
-        assert set(report['score_checks'][direction]) == {'Trend', 'Momentum', 'RSI', 'Volume'}
+        assert set(report['score_checks'][direction]) == {'Trend', 'Momentum', 'RSI'}
         assert report[direction.lower() + '_score'] == sum(report['score_checks'][direction].values())
 
 
