@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from pathlib import Path
 from .config import TWELVE_DATA_API_KEY, MARKET_DATA_PROVIDER, ENABLE_YAHOO_FALLBACK, APP_VERSION, STRATEGY_VERSION
 from .market_data import MarketDataRouter
-from .analysis import analyse
+from .analysis import analyse, apply_volatility_gate, apply_candle_gate
 from .backtest import run_backtest
 from .db import init_db, save_signal, list_signals, list_trades, update_open_trades, performance
 
@@ -42,12 +42,16 @@ async def analyse_symbol(symbol:str,interval:str=Query('15min')):
     if not symbol or len(symbol)>30: raise HTTPException(400,'Invalid symbol')
     try:
         data,provider,errors=await router.candles(symbol,interval,300)
-        result=analyse(data)
+        # Providers do not expose a shared closed flag. Conservatively omit the newest bar.
+        signal_candles=data[:-1]
+        result=analyse(signal_candles)
+        result['base_direction']=result['direction']
+        apply_volatility_gate(result, signal_candles)
         confirmation_interval={'5min':'1h','15min':'4h','1h':'4h','4h':'1day'}.get(interval)
         if confirmation_interval and result['direction'] in ('LONG','SHORT'):
             try:
                 higher_data,higher_provider,higher_errors=await router.candles(symbol,confirmation_interval,200)
-                higher=analyse(higher_data)
+                higher=analyse(higher_data[:-1])
                 result['base_direction']=result['direction']
                 result['higher_timeframe']=confirmation_interval
                 result['higher_timeframe_direction']=higher['direction']
@@ -70,6 +74,7 @@ async def analyse_symbol(symbol:str,interval:str=Query('15min')):
                 result['rationale'] += f"; higher-timeframe confirmation unavailable ({str(confirm_error)[:120]}), so no trade is opened"
         else:
             result['mtf_status']='Not applied to daily timeframe' if interval=='1day' else 'No directional signal to confirm'
+        apply_candle_gate(result)
         closed_ids=update_open_trades(symbol,interval,data)
         signal_id,trade_opened=save_signal(symbol,interval,result,provider)
         return {'signal_id':signal_id,'symbol':symbol,'timeframe':interval,'provider':provider,'provider_fallbacks':errors,**result,'paper_trade_opened':trade_opened,'closed_paper_trade_ids':closed_ids,'tradingview_url':f'https://www.tradingview.com/chart/?symbol={symbol}'}
@@ -91,8 +96,8 @@ def stats(): return performance()
 async def backtest_symbol(symbol:str,interval:str=Query('1day'),outputsize:int=Query(500,ge=100,le=2000),max_holding:int=Query(20,ge=1,le=100)):
     if interval not in INTERVALS: raise HTTPException(400,'Unsupported interval')
     try:
-        data,provider,errors=await router.candles(symbol.upper(),interval,outputsize)
-        result=run_backtest(data,max_holding)
+        data,provider,errors=await router.candles(symbol.upper(),interval,outputsize+1)
+        result=run_backtest(data[:-1],max_holding)
         return {'symbol':symbol.upper(),'interval':interval,'provider':provider,'provider_fallbacks':errors,**result}
     except ValueError as e: raise HTTPException(422,str(e)) from e
     except Exception as e: raise HTTPException(502,str(e)) from e

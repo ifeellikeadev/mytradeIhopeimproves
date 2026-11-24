@@ -9,4 +9,4 @@ ENABLE_YAHOO_FALLBACK = os.getenv("ENABLE_YAHOO_FALLBACK", "true").strip().lower
 DATABASE_PATH = os.getenv("DATABASE_PATH", "./data/trading_signals.db")
 Path(DATABASE_PATH).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
 APP_VERSION = "1.0.0"
-STRATEGY_VERSION = "trend-momentum-1.0"
+STRATEGY_VERSION = "trend-momentum-volatility-1.1"

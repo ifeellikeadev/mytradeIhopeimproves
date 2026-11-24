@@ -1,6 +1,5 @@
 from __future__ import annotations
 from .market_data import Candle
-import math
 
 def _ema(values, period):
     alpha=2/(period+1); out=[]; current=values[0]
@@ -37,6 +36,73 @@ def _pattern(candles):
     if upper >= 2*max(body,1e-9) and lower <= body and body/span < .35: return "Shooting-star-like candle"
     if body/span < .1: return "Doji-like candle"
     return "None detected"
+
+# Paper-research settings, not validated safety thresholds.
+VOLATILITY_LOOKBACK = 100
+VOLATILITY_PERCENTILE = 0.90
+VOLATILITY_SPIKE_MULTIPLE = 3.0
+# None reports quiet conditions without blocking them; set to 0.10 to test a quiet gate.
+QUIET_BLOCK_PERCENTILE = None
+CANDLE_GATE_ENABLED = True
+
+
+def _percentile(values, fraction):
+    ordered = sorted(values)
+    index = (len(ordered) - 1) * fraction
+    left = int(index)
+    right = min(left + 1, len(ordered) - 1)
+    return ordered[left] + (index - left) * (ordered[right] - ordered[left])
+
+
+def volatility(candles):
+    # Need a prior close for every true range, plus 100 prior ATR% observations.
+    sample = candles[-(VOLATILITY_LOOKBACK + 15):]
+    if len(sample) < VOLATILITY_LOOKBACK + 15:
+        return {'status': 'UNAVAILABLE', 'atr_pct': None, 'high_threshold_pct': None,
+                'bar_range_pct': None, 'spike_threshold_pct': None}
+    ranges = []
+    for previous, current in zip(sample, sample[1:]):
+        ranges.append(max(current.high - current.low,
+                          abs(current.high - previous.close), abs(current.low - previous.close)))
+    atr_pcts = [100 * (sum(ranges[i-13:i+1]) / 14) / sample[i+1].close
+                for i in range(13, len(ranges))]
+    range_pcts = [100 * value / bar.close for value, bar in zip(ranges, sample[1:])]
+    high = _percentile(atr_pcts[:-1], VOLATILITY_PERCENTILE)
+    quiet = _percentile(atr_pcts[:-1], 0.10 if QUIET_BLOCK_PERCENTILE is None else QUIET_BLOCK_PERCENTILE)
+    normal_range = _percentile(range_pcts[-(VOLATILITY_LOOKBACK+1):-1], 0.5)
+    shock_limit = normal_range * VOLATILITY_SPIKE_MULTIPLE
+    latest, bar_range = atr_pcts[-1], range_pcts[-1]
+    status = ('EXTREME' if latest > high or bar_range > shock_limit
+              else 'QUIET' if latest < quiet else 'TYPICAL')
+    return {'status': status, 'atr_pct': round(latest, 6), 'high_threshold_pct': round(high, 6),
+            'bar_range_pct': round(bar_range, 6), 'spike_threshold_pct': round(shock_limit, 6)}
+
+
+def wait(result, reason, gate):
+    result.update(direction='WAIT', entry_reference=None, stop_loss=None, take_profit=None,
+                  risk_reward=None, blocked_by=gate)
+    result['rationale'] += '; ' + reason
+
+
+def apply_volatility_gate(result, candles):
+    metrics = result['volatility'] = volatility(candles)
+    if result['direction'] not in ('LONG', 'SHORT'):
+        return
+    reason = {'EXTREME': 'Volatility too high: ATR% or latest candle range exceeded its limit',
+              'UNAVAILABLE': 'Not enough data to assess volatility'}.get(metrics['status'])
+    if metrics['status'] == 'QUIET' and QUIET_BLOCK_PERCENTILE is not None:
+        reason = 'Volatility below the configured quiet-market limit'
+    if reason:
+        wait(result, reason, 'volatility')
+
+
+def apply_candle_gate(result):
+    if not CANDLE_GATE_ENABLED or result['direction'] not in ('LONG', 'SHORT'):
+        return
+    expected = {'LONG': 'Bullish engulfing', 'SHORT': 'Bearish engulfing'}[result['direction']]
+    if result['candlestick_pattern'] != expected:
+        wait(result, 'Candle gate: expected ' + expected, 'candlestick')
+
 
 def analyse(candles: list[Candle]) -> dict:
     if len(candles)<60: raise ValueError(f"Need at least 60 candles; received {len(candles)}")
