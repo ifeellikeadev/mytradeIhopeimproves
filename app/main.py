@@ -5,9 +5,11 @@ from pathlib import Path
 from .stock_search import find_stocks
 from .config import TWELVE_DATA_API_KEY, MARKET_DATA_PROVIDER, ENABLE_YAHOO_FALLBACK, APP_VERSION, STRATEGY_VERSION
 from .market_data import MarketDataRouter
-from .analysis import analyse, apply_volatility_gate, apply_candle_gate
+from .analysis import analyse
+from .strategy import CONFIRMATION, DEFAULT_HOLD, prepare, finish, historical_confirmation
+from .timed_exits import update_paper_trades
 from .backtest import run_backtest
-from .db import init_db, save_signal, list_signals, list_trades, update_open_trades, performance
+from .db import init_db, save_signal, list_signals, list_trades, performance
 
 app=FastAPI(title="Trading Signal Lab",version=APP_VERSION,description="Local-first market analysis and paper-trading journal. No live order execution.")
 BASE=Path(__file__).resolve().parent
@@ -45,8 +47,9 @@ async def candles(symbol:str,interval:str=Query('15min'),outputsize:int=Query(30
     except Exception as e: raise HTTPException(502,str(e)) from e
 
 @app.get('/api/analyse/{symbol}')
-async def analyse_symbol(symbol:str,interval:str=Query('15min')):
+async def analyse_symbol(symbol:str,interval:str=Query('15min'),max_holding:int=DEFAULT_HOLD):
     if interval not in INTERVALS: raise HTTPException(400,'Unsupported interval')
+    if not 1 <= max_holding <= 100: raise HTTPException(422,'Maximum hold must be 1 to 100 candles')
     symbol=symbol.upper().strip()
     if not symbol or len(symbol)>30: raise HTTPException(400,'Invalid symbol')
     try:
@@ -54,37 +57,20 @@ async def analyse_symbol(symbol:str,interval:str=Query('15min')):
         # Providers do not expose a shared closed flag. Conservatively omit the newest bar.
         signal_candles=data[:-1]
         result=analyse(signal_candles)
-        result['base_direction']=result['direction']
-        apply_volatility_gate(result, signal_candles)
-        confirmation_interval={'5min':'1h','15min':'4h','1h':'4h','4h':'1day'}.get(interval)
-        if confirmation_interval and result['direction'] in ('LONG','SHORT'):
+        prepare(result, signal_candles)
+        confirmation_interval=CONFIRMATION.get(interval)
+        higher=None
+        if confirmation_interval:
             try:
                 higher_data,higher_provider,higher_errors=await router.candles(symbol,confirmation_interval,200)
                 higher=analyse(higher_data[:-1])
-                result['base_direction']=result['direction']
-                result['higher_timeframe']=confirmation_interval
-                result['higher_timeframe_direction']=higher['direction']
                 result['higher_timeframe_provider']=higher_provider
                 errors.extend(higher_errors)
-                if higher['direction'] != result['direction']:
-                    result['direction']='WAIT'
-                    result['entry_reference']=None; result['stop_loss']=None; result['take_profit']=None; result['risk_reward']=None
-                    result['rationale'] += f"; higher timeframe ({confirmation_interval}) is {higher['direction']}, so the signal is downgraded to WAIT"
-                    result['mtf_status']='Not confirmed; conflicting or neutral higher-timeframe signal'
-                else:
-                    result['mtf_status']='Confirmed by higher timeframe'
-            except Exception as confirm_error:
-                result['base_direction']=result['direction']
-                result['higher_timeframe']=confirmation_interval
-                result['higher_timeframe_direction']='UNAVAILABLE'
-                result['direction']='WAIT'
-                result['entry_reference']=None; result['stop_loss']=None; result['take_profit']=None; result['risk_reward']=None
-                result['mtf_status']='Confirmation data unavailable; fail-safe WAIT'
-                result['rationale'] += f"; higher-timeframe confirmation unavailable ({str(confirm_error)[:120]}), so no trade is opened"
-        else:
-            result['mtf_status']='Not applied to daily timeframe' if interval=='1day' else 'No directional signal to confirm'
-        apply_candle_gate(result)
-        closed_ids=update_open_trades(symbol,interval,data)
+            except Exception:
+                pass  # A provider failure must never allow an unconfirmed entry.
+        finish(result, confirmation_interval, higher)
+        result['max_holding_candles']=max_holding if result['direction'] != 'WAIT' else None
+        closed_ids=update_paper_trades(symbol,interval,signal_candles)
         signal_id,trade_opened=save_signal(symbol,interval,result,provider)
         return {'signal_id':signal_id,'symbol':symbol,'timeframe':interval,'provider':provider,'provider_fallbacks':errors,**result,'paper_trade_opened':trade_opened,'closed_paper_trade_ids':closed_ids,'tradingview_url':f'https://www.tradingview.com/chart/?symbol={symbol}'}
     except ValueError as e: raise HTTPException(422,str(e)) from e
@@ -102,11 +88,18 @@ def paper_trades(status:str|None=None,limit:int=Query(200,ge=1,le=1000)):
 def stats(): return performance()
 
 @app.get('/api/backtest/{symbol}')
-async def backtest_symbol(symbol:str,interval:str=Query('1day'),outputsize:int=Query(500,ge=100,le=2000),max_holding:int=Query(20,ge=1,le=100)):
+async def backtest_symbol(symbol:str,interval:str=Query('1day'),outputsize:int=Query(500,ge=100,le=2000),max_holding:int=Query(DEFAULT_HOLD,ge=1,le=100)):
     if interval not in INTERVALS: raise HTTPException(400,'Unsupported interval')
     try:
         data,provider,errors=await router.candles(symbol.upper(),interval,outputsize+1)
-        result=run_backtest(data[:-1],max_holding)
+        higher_interval=CONFIRMATION.get(interval)
+        at=None
+        if higher_interval:
+            higher,higher_provider,_=await router.candles(symbol.upper(),higher_interval,outputsize+201)
+            if provider != higher_provider:
+                raise ValueError('Backtest needs the same data provider for both timeframes')
+            at=historical_confirmation(higher)
+        result=run_backtest(data[:-1],max_holding,higher_interval,at)
         return {'symbol':symbol.upper(),'interval':interval,'provider':provider,'provider_fallbacks':errors,**result}
     except ValueError as e: raise HTTPException(422,str(e)) from e
     except Exception as e: raise HTTPException(502,str(e)) from e

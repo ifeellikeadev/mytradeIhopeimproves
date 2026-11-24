@@ -1,17 +1,19 @@
 from __future__ import annotations
-from .analysis import analyse, apply_volatility_gate, apply_candle_gate
+from .analysis import analyse
+from .strategy import DEFAULT_HOLD, prepare, finish
 from .market_data import Candle
 
-def run_backtest(candles: list[Candle], max_holding: int = 20) -> dict:
+def run_backtest(candles: list[Candle], max_holding: int = DEFAULT_HOLD, higher_interval=None, higher_at=None) -> dict:
     if len(candles) < 100:
         raise ValueError(f"At least 100 candles are required for a useful basic backtest; received {len(candles)}")
     trades=[]
-    blocked={'volatility': 0, 'candlestick': 0}
+    blocked={'volume': 0, 'volatility': 0, 'higher_timeframe': 0, 'candlestick': 0}
     i=59
     while i < len(candles)-1:
         snapshot=analyse(candles[:i+1])
-        apply_volatility_gate(snapshot, candles[:i+1])
-        apply_candle_gate(snapshot)
+        prepare(snapshot, candles[:i+1])
+        higher = higher_at(candles[i].datetime) if higher_at and snapshot['direction'] != 'WAIT' else None
+        finish(snapshot, higher_interval, higher)
         if snapshot.get('blocked_by') in blocked:
             blocked[snapshot['blocked_by']] += 1
         direction=snapshot['direction']
@@ -44,6 +46,8 @@ def run_backtest(candles: list[Candle], max_holding: int = 20) -> dict:
             if exit_price is not None:
                 exit_time=bar.datetime; exit_index=j; break
         if exit_price is None:
+            if end < i+1+max_holding:
+                break  # History ended before the maximum hold; do not invent a time exit.
             exit_index=end-1
             exit_bar=candles[exit_index]
             exit_price=exit_bar.close; exit_time=exit_bar.datetime; reason='TIME_EXIT'
@@ -56,4 +60,4 @@ def run_backtest(candles: list[Candle], max_holding: int = 20) -> dict:
     equity=peak=drawdown=0.0
     for r in rs:
         equity+=r; peak=max(peak,equity); drawdown=max(drawdown,peak-equity)
-    return {'candles_tested':len(candles),'blocked_candidates':blocked,'trades':len(trades),'wins':len(wins),'losses':len(losses),'win_rate_pct':round(len(wins)/len(rs)*100,2) if rs else None,'net_r':round(sum(rs),2),'expectancy_r':round(sum(rs)/len(rs),3) if rs else None,'profit_factor':round(gross_win/gross_loss,2) if gross_loss else (None if not gross_win else 'infinite'),'max_drawdown_r':round(drawdown,2),'max_holding_candles':max_holding,'trade_log':trades[-100:],'warning':'Historical simulation, not a forecast. It applies the volatility and candle gates but does not simulate live higher-timeframe confirmation. It uses a simple heuristic strategy, assumes next-candle-open entries, ignores spread/fees/slippage/borrow costs, and resolves same-candle stop/target ambiguity in favour of the stop. Results are not out-of-sample proof and do not establish a calibrated probability.'}
+    return {'candles_tested':len(candles),'blocked_candidates':blocked,'trades':len(trades),'wins':len(wins),'losses':len(losses),'win_rate_pct':round(len(wins)/len(rs)*100,2) if rs else None,'net_r':round(sum(rs),2),'expectancy_r':round(sum(rs)/len(rs),3) if rs else None,'profit_factor':round(gross_win/gross_loss,2) if gross_loss else (None if not gross_win else 'infinite'),'max_drawdown_r':round(drawdown,2),'max_holding_candles':max_holding,'trade_log':trades[-100:],'warning':'Historical simulation, not a forecast. It applies all entry gates. Higher-timeframe bars become eligible at the next higher bar open; candidates without enough aligned history are skipped. It uses a simple heuristic strategy, assumes next-candle-open entries, ignores spread/fees/slippage/borrow costs, and resolves same-candle stop/target ambiguity in favour of the stop. Results are not out-of-sample proof and do not establish a calibrated probability.'}
