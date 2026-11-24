@@ -2,6 +2,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pathlib import Path
+from .stock_search import find_stocks
 from .config import TWELVE_DATA_API_KEY, MARKET_DATA_PROVIDER, ENABLE_YAHOO_FALLBACK, APP_VERSION, STRATEGY_VERSION
 from .market_data import MarketDataRouter
 from .analysis import analyse, apply_volatility_gate, apply_candle_gate
@@ -26,6 +27,14 @@ def health(): return {'status':'ok','version':APP_VERSION,'strategy_version':STR
 
 @app.get('/api/watchlist')
 def watchlist(): return WATCHLIST
+
+@app.get('/api/stock-search')
+async def stock_search(q: str = Query(..., min_length=1, max_length=60)):
+    query = ' '.join(q.split())
+    if not query:
+        raise HTTPException(400, 'Enter a company name or ticker.')
+    return await find_stocks(query, TWELVE_DATA_API_KEY, WATCHLIST)
+
 
 @app.get('/api/candles/{symbol}')
 async def candles(symbol:str,interval:str=Query('15min'),outputsize:int=Query(300,ge=60,le=5000)):

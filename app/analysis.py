@@ -113,8 +113,15 @@ def analyse(candles: list[Candle]) -> dict:
     volume_ratio=(volumes[-1]/volume_base) if volume_base else None
     macd_bull=macd_line[-1]>signal_line[-1]; trend_bull=last>ema20[-1]>ema50[-1]
     trend_bear=last<ema20[-1]<ema50[-1]
-    long_score=sum([trend_bull, macd_bull, rsi is not None and 50<rsi<72, volume_ratio is not None and volume_ratio>=1.0])
-    short_score=sum([trend_bear, not macd_bull, rsi is not None and 28<rsi<50, volume_ratio is not None and volume_ratio>=1.0])
+    volume_ok = volume_ratio is not None and volume_ratio >= 1.0
+    score_checks = {
+        'LONG': {'Trend': trend_bull, 'Momentum': macd_bull,
+                 'RSI': rsi is not None and 50 < rsi < 72, 'Volume': volume_ok},
+        'SHORT': {'Trend': trend_bear, 'Momentum': not macd_bull,
+                  'RSI': rsi is not None and 28 < rsi < 50, 'Volume': volume_ok},
+    }
+    long_score = sum(score_checks['LONG'].values())
+    short_score = sum(score_checks['SHORT'].values())
     if long_score>=3 and long_score>short_score: direction="LONG"
     elif short_score>=3 and short_score>long_score: direction="SHORT"
     else: direction="WAIT"
@@ -127,4 +134,4 @@ def analyse(candles: list[Candle]) -> dict:
     reasons.append("MACD momentum is bullish" if macd_bull else "MACD momentum is bearish")
     reasons.append(f"RSI(14) is {rsi:.1f}" if rsi is not None else "RSI unavailable")
     reasons.append(f"Latest volume is {volume_ratio:.2f}x its 20-candle average" if volume_ratio is not None else "Volume unavailable")
-    return {"direction":direction,"probability":None,"probability_status":"Not available: no out-of-sample probability calibration yet.","last_close":round(last,6),"ema20":round(ema20[-1],6),"ema50":round(ema50[-1],6),"rsi14":round(rsi,2) if rsi is not None else None,"macd":round(macd_line[-1],6),"macd_signal":round(signal_line[-1],6),"atr14":round(atr,6),"volume_ratio":round(volume_ratio,2) if volume_ratio is not None else None,"candlestick_pattern":_pattern(candles),"long_score":int(long_score),"short_score":int(short_score),"entry_reference":round(entry,6) if direction!="WAIT" else None,"stop_loss":round(stop,6) if stop is not None else None,"take_profit":round(target,6) if target is not None else None,"risk_reward":"1:2" if direction!="WAIT" else None,"rationale":"; ".join(reasons),"candles_used":len(candles),"last_candle_time":candles[-1].datetime,"warning":"Rule-based research signal only. Not a validated strategy or investment recommendation; paper trading only."}
+    return {"direction":direction,"score_checks":score_checks,"probability":None,"probability_status":"Not available: no out-of-sample probability calibration yet.","last_close":round(last,6),"ema20":round(ema20[-1],6),"ema50":round(ema50[-1],6),"rsi14":round(rsi,2) if rsi is not None else None,"macd":round(macd_line[-1],6),"macd_signal":round(signal_line[-1],6),"atr14":round(atr,6),"volume_ratio":round(volume_ratio,2) if volume_ratio is not None else None,"candlestick_pattern":_pattern(candles),"long_score":int(long_score),"short_score":int(short_score),"entry_reference":round(entry,6) if direction!="WAIT" else None,"stop_loss":round(stop,6) if stop is not None else None,"take_profit":round(target,6) if target is not None else None,"risk_reward":"1:2" if direction!="WAIT" else None,"rationale":"; ".join(reasons),"candles_used":len(candles),"last_candle_time":candles[-1].datetime,"warning":"Rule-based research signal only. Not a validated strategy or investment recommendation; paper trading only."}
